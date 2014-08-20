@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -8,17 +9,27 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/HouzuoGuo/tiedot/db"
 	"github.com/codegangsta/cli"
+	uuidgen "github.com/nu7hatch/gouuid"
 )
 
-var (
-	round       time.Duration = time.Second * 5
-	shortBreak  time.Duration = time.Second * 2
-	longBreak   time.Duration = time.Second * 4
-	totalRounds int           = 5
-	current     int           = 1
-	task        *string       // TODO put into tiedot embedded database
-)
+type Pomodoro struct {
+	conn        *db.DB
+	round       time.Duration
+	shortBreak  time.Duration
+	longBreak   time.Duration
+	totalRounds int
+	current     int
+	currentTask *Task
+}
+
+type Task struct {
+	docId       int
+	uuid        string
+	description string
+	tags        []string
+}
 
 func checkError(err error) {
 	if err != nil {
@@ -28,8 +39,31 @@ func checkError(err error) {
 }
 
 func main() {
+	// TODO Put into HOME directory in .heirloom
+	dbDir := "/tmp/heirloom"
+	// os.RemoveAll(dbDir)
+	// defer os.RemoveAll(dbDir)
+
+	conn, err := db.OpenDB(dbDir)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	pomodoro := Pomodoro{
+		conn:        conn,
+		round:       time.Minute * 20,
+		shortBreak:  time.Minute * 5,
+		longBreak:   time.Minute * 20,
+		totalRounds: 5,
+		current:     1,
+		currentTask: nil,
+	}
+
+	pomodoro.initDB()
+
 	app := cli.NewApp()
-	app.Name = "hlr"
+	app.Name = "hrl"
 	app.Usage = "Simple command line tool for the Pomodoro® technique"
 	app.Version = "0.0.1"
 	app.Flags = []cli.Flag{
@@ -62,82 +96,110 @@ func main() {
 			Action: func(c *cli.Context) {
 				// TODO handle cli flags
 
-				pomodoro := make(chan bool)
+				round := make(chan bool)
 				smallBreak := make(chan bool)
 				longBreak := make(chan bool)
 				done := make(chan bool)
 
-				go pomodoroRound(pomodoro)
-				go pomodoroService(pomodoro, smallBreak, longBreak, done)
+				go pomodoro.beginRound(round)
+				go pomodoro.service(round, smallBreak, longBreak, done)
 
 				<-done
+			},
+		},
+		{
+			Name:      "add",
+			ShortName: "a",
+			Usage:     "Add a task to the collection of tasks to accomplish",
+			Action: func(c *cli.Context) {
+				desc := c.Args().First()
+
+				uuid, err := uuidgen.NewV4()
+				checkError(err)
+
+				pomodoro.insertTask(uuid.String(), desc, nil)
 			},
 		},
 	}
 	app.Run(os.Args)
 }
 
-func pomodoroRound(chanPomodoro chan bool) {
-	tellBeginRound()
-	time.Sleep(round)
-	tellEndRound()
+func (p *Pomodoro) beginRound(chanPomodoro chan bool) {
+	p.pickTask()
+	if p.currentTask == nil {
+		fmt.Println("No more tasks in collection: You are on your own! Or stop the round and add a new task with `hrl add`")
+	} else {
+		fmt.Println("Current Task: " + p.currentTask.description)
+	}
+	p.tellBeginRound()
+	time.Sleep(p.round)
+	p.tellEndRound()
 	chanPomodoro <- true
 }
 
-func pomodoroBreak(chanBreak chan bool) {
+func (p *Pomodoro) beginBreak(chanBreak chan bool) {
 	tellBeginSmallBreak()
-	time.Sleep(shortBreak)
+	time.Sleep(p.shortBreak)
 	chanBreak <- true
 }
 
-func pomodoroLongBreak(chanLongBreak chan bool) {
+func (p *Pomodoro) beginLongBreak(chanLongBreak chan bool) {
 	tellBeginLongBreak()
-	time.Sleep(longBreak)
+	time.Sleep(p.longBreak)
 	chanLongBreak <- true
 }
 
-func pomodoroService(chanPomodoro, chanBreak, chanLongBreak, chanDone chan bool) {
-	fmt.Printf("Pomodoro service started")
+func (p *Pomodoro) service(chanPomodoro, chanBreak, chanLongBreak, chanDone chan bool) {
+	fmt.Println("Pomodoro service started\n")
 	for {
 		select {
 
 		case round := <-chanPomodoro:
 			_ = round
-			if current >= totalRounds {
-				go pomodoroLongBreak(chanLongBreak)
-				current = 1
+			if p.current >= p.totalRounds {
+				go p.beginLongBreak(chanLongBreak)
+				p.current = 1
 				// TODO Ask if continue?
 				chanDone <- true
 			} else {
-				current += 1
-				go pomodoroBreak(chanBreak)
+				p.current += 1
+				go p.beginBreak(chanBreak)
 			}
 
 		case smallBreak := <-chanBreak:
 			_ = smallBreak
 			tellEndSmallBreak()
-			go pomodoroRound(chanPomodoro)
+			go p.beginRound(chanPomodoro)
 
 		case longBreak := <-chanLongBreak:
 			_ = longBreak
 			tellEndLongBreak()
-			go pomodoroRound(chanPomodoro)
+			go p.beginRound(chanPomodoro)
 
 		}
 	}
 }
 
-func tellBeginRound() {
-	toSay := "Pomodoro round" + strconv.Itoa(current) + "begins"
+func (p *Pomodoro) tellBeginRound() {
+	toSay := "Pomodoro round" + strconv.Itoa(p.current) + "begins"
 	exec.Command("say", toSay).Output()
 }
 
-func tellEndRound() {
+func (p *Pomodoro) tellEndRound() {
 	exec.Command("say", "Round ended").Output()
-	fmt.Printf("Have you finished the current task? (Y/N)")
-	var input string
-	fmt.Scanln(&input)
-	// TODO Analyze input and handle task into tiedot
+
+	input := askFinished()
+	for input != "Y" && input != "N" {
+		input = askFinished()
+	}
+
+	if input == "Y" && p.currentTask != nil {
+		p.deleteTask(p.currentTask.docId)
+		p.currentTask = nil
+		p.pickTask()
+	} else {
+		// TODO ask if want to continue with this task or pick another one
+	}
 }
 
 func tellBeginSmallBreak() {
@@ -154,4 +216,74 @@ func tellBeginLongBreak() {
 
 func tellEndLongBreak() {
 	exec.Command("say", "This is the end of the long break. Let's get back to work!").Output()
+}
+
+func askFinished() string {
+	fmt.Printf("Have you finished the current task? (Y/N)")
+	var input string
+	fmt.Scanln(&input)
+	return input
+}
+
+func (p *Pomodoro) insertTask(uuid string, description string, tags []string) error {
+	tasks := p.conn.Use("Tasks")
+
+	_, err := tasks.Insert(map[string]interface{}{
+		"uuid": uuid,
+		"desc": description,
+		"tags": []interface{}{}})
+
+	if err != nil {
+		panic(err)
+	}
+
+	return nil
+}
+
+func (p *Pomodoro) pickTask() {
+	tasks := p.conn.Use("Tasks")
+
+	tasks.ForEachDoc(func(id int, docContent []byte) (willMoveOn bool) {
+		// Take first task encountered
+		var doc map[string]interface{}
+		if json.Unmarshal(docContent, &doc) != nil {
+			panic("cannot deserialize")
+		}
+		uuid := doc["uuid"].(string)
+		desc := doc["desc"].(string)
+
+		p.currentTask = &Task{docId: id, uuid: uuid, description: desc}
+
+		return false
+	})
+}
+
+func (p *Pomodoro) deleteTask(docId int) error {
+	tasks := p.conn.Use("Tasks")
+	if err := tasks.Delete(docId); err != nil {
+		panic(err)
+	}
+	return nil
+}
+
+func (p *Pomodoro) initDB() {
+	p.conn.Create("Tasks")
+
+	tasks := p.conn.Use("Tasks")
+	tasks.Index([]string{"uuid"})
+	tasks.Index([]string{"desc"})
+
+	p.syncDB()
+}
+
+func (p *Pomodoro) closeDB() {
+	if err := p.conn.Close(); err != nil {
+		panic(err)
+	}
+}
+
+func (p *Pomodoro) syncDB() {
+	if err := p.conn.Sync(); err != nil {
+		panic(err)
+	}
 }
