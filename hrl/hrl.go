@@ -55,9 +55,9 @@ func main() {
 
 	pomodoro := Pomodoro{
 		conn:        conn,
-		timer:       time.Minute * 20,
+		timer:       time.Minute * 25,
 		shortBreak:  time.Minute * 5,
-		longBreak:   time.Minute * 25,
+		longBreak:   time.Minute * 30,
 		totalRounds: 5,
 		current:     1,
 		currentTask: nil,
@@ -88,12 +88,12 @@ func main() {
 				},
 				cli.StringFlag{
 					Name:  "long, l",
-					Value: "20",
+					Value: "30",
 					Usage: "time for a long break",
 				},
 				cli.StringFlag{
 					Name:  "rounds, r",
-					Value: "1",
+					Value: "5",
 					Usage: "number of pomodoro rounds",
 				},
 			},
@@ -131,6 +131,8 @@ func main() {
 				go pomodoro.service(round, smallBreak, longBreak, done)
 
 				<-done
+
+				pomodoro.closeDB()
 			},
 		},
 		{
@@ -139,6 +141,7 @@ func main() {
 			Action: func(c *cli.Context) {
 				desc := c.Args().First()
 				pomodoro.insertTask(desc, nil)
+				pomodoro.closeDB()
 			},
 		},
 	}
