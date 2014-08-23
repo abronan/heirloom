@@ -131,8 +131,6 @@ func main() {
 				go pomodoro.service(round, smallBreak, longBreak, done)
 
 				<-done
-
-				pomodoro.closeDB()
 			},
 		},
 		{
@@ -141,7 +139,6 @@ func main() {
 			Action: func(c *cli.Context) {
 				desc := c.Args().First()
 				pomodoro.insertTask(desc, nil)
-				pomodoro.closeDB()
 			},
 		},
 	}
