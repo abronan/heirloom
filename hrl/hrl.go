@@ -317,12 +317,6 @@ func (p *Pomodoro) closeDB() {
 	}
 }
 
-func (p *Pomodoro) syncDB() {
-	if err := p.conn.Sync(); err != nil {
-		panic(err)
-	}
-}
-
 func (p *Pomodoro) SetTimer(timer int) {
 	p.timer = time.Minute * time.Duration(timer)
 }
