@@ -7,7 +7,7 @@ Great example for an exercise with Go using goroutines.
 
 Based on the `say` command. Only tested on OSX. Be sure to check Enhanced Dictation for offline usage and download the voice *Samantha*.
 
-###Installation
+### Installation
 
 Be sure to have a proper Go installation. Then:
 
@@ -17,11 +17,11 @@ go into the `hrl` folder and type : `go install`
 
 ### Basic usage
 
-#####Add a task
+##### Add a task
 
 `hrl add "Read the Raft algorithm research paper"`
 
-#####Start a session
+##### Start a session
 
 `hrl start` *using default timer values*
 
